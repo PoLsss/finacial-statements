@@ -47,7 +47,6 @@ import {
   PolarAngleAxis,
   PolarRadiusAxis,
   Radar,
-  Legend,
   Cell,
 } from 'recharts';
 import {
@@ -153,18 +152,26 @@ const RATIO_FULL_NAMES: Record<string, string> = {
 };
 
 const THRESHOLDS: Record<string, { value: number; label: string; higherIsBetter: boolean }> = {
-  A1: { value: 1.0, label: '≥ 1.0', higherIsBetter: true },
-  A2: { value: 0.5, label: '≥ 0.5', higherIsBetter: true },
-  A3: { value: 0.1, label: '≥ 0.1', higherIsBetter: true },
-  B1: { value: 0.6, label: '≤ 0.6', higherIsBetter: false },
-  B2: { value: 1.5, label: '≤ 1.5', higherIsBetter: false },
-  B3: { value: 2.0, label: '≥ 2.0', higherIsBetter: true },
-  C1: { value: 4.0, label: '≥ 4.0', higherIsBetter: true },
-  C2: { value: 0.15, label: '≤ 0.15', higherIsBetter: false },
-  C3: { value: 2.0, label: '≥ 2.0', higherIsBetter: true },
-  D1: { value: 0.05, label: '≥ 5%', higherIsBetter: true },
-  D2: { value: 0.05, label: '≥ 5%', higherIsBetter: true },
-  D3: { value: 0.03, label: '≥ 3%', higherIsBetter: true },
+  // Nhóm A – Khả năng thanh toán
+  // Quy luật: (A1 < 1) hoặc (A2 < 0.5) → Nguy hiểm
+  A1: { value: 1.0,   label: '≥ 1.0',    higherIsBetter: true  }, // Current ratio   – threshold nguy hiểm
+  A2: { value: 0.5,   label: '≥ 0.5',    higherIsBetter: true  }, // Quick ratio      – threshold nguy hiểm
+  A3: { value: 0.2,   label: '≥ 0.2',    higherIsBetter: true  }, // Cash ratio       – chuẩn chung
+  // Nhóm B – Cân đối vốn
+  // Quy luật: (B1 > TB ngành) hoặc (0 < B3 < 1.5) → Nguy hiểm
+  B1: { value: 0.5,   label: '≤ 0.5',    higherIsBetter: false }, // Debt/Assets      – chuẩn chung
+  B2: { value: 1.0,   label: '≤ 1.0',    higherIsBetter: false }, // D/E ratio        – chuẩn chung
+  B3: { value: 1.5,   label: '≥ 1.5',    higherIsBetter: true  }, // Interest coverage– threshold nguy hiểm
+  // Nhóm C – Hiệu quả hoạt động
+  // Quy luật: (C1 < TB ngành) hoặc (C2 > TB ngành) → Kém
+  C1: { value: 5.0,   label: '≥ 5.0',    higherIsBetter: true  }, // Inventory turnover – chuẩn chung
+  C2: { value: 0.125, label: '≤ 0.125',  higherIsBetter: false }, // AR/Revenue ratio  – chuẩn chung
+  C3: { value: 3.0,   label: '≥ 3.0',    higherIsBetter: true  }, // Fixed asset turnover – chuẩn chung
+  // Nhóm D – Khả năng sinh lời
+  // Quy luật: (D1 <= 0) hoặc (D3 < TB ngành) → Kém
+  D1: { value: 0.0,   label: '> 0',      higherIsBetter: true  }, // Net profit margin – threshold: phải > 0
+  D2: { value: 0.07,  label: '≥ 7%',     higherIsBetter: true  }, // EBIT-based ROA    – chuẩn chung
+  D3: { value: 0.05,  label: '≥ 5%',     higherIsBetter: true  }, // Net income ROA    – chuẩn chung
 };
 
 function classifyRisk(key: string, value: number | null): 'good' | 'average' | 'risk' {
@@ -498,7 +505,7 @@ export default function StatisticsPage() {
     const sinhLoi = ((d1 != null && d1 <= 0) || (d3 != null && td3 != null && d3 < td3)) ? 'Kém' : 'Tốt';
     const reasonD = sinhLoi === 'Kém'
       ? `D1 <= 0 (${d1?.toFixed(4) ?? 'N/A'}) hoặc D3 < TB (${d3?.toFixed(4) ?? 'N/A'} < ${td3?.toFixed(4) ?? 'N/A'})`
-      : `D1 > 0 và D3 >= TB`;
+      : `D1 > 0 (${d1?.toFixed(4) ?? 'N/A'}) và D3 >= TB (${d3?.toFixed(4) ?? 'N/A'} >= ${td3?.toFixed(4) ?? 'N/A'})`;
 
     let overallRiskText = 'Trung bình';
     let overallReason = '';
@@ -1123,9 +1130,33 @@ function NormalizedRadarChart({ ratios }: { ratios: Record<string, RatioData> })
     .filter(([, r]) => isFiniteNumber(r.result))
     .map(([key, r]) => {
       const threshold = THRESHOLDS[key];
-      const normalized = threshold ? (r.result !== null ? Math.min(r.result / threshold.value, 2) : null) : r.result;
+      let normalized: number | null = null;
+      if (threshold && r.result !== null) {
+        const v = r.result;
+        const t = threshold.value;
+        if (threshold.higherIsBetter) {
+          // Công thức logistic: 2v/(v+t)
+          // v=0 → 0, v=t → 1.0, v→∞ → tiệm cận 2 (không bao giờ bằng đúng 2)
+          normalized = (2 * v) / (v + t);
+        } else {
+          // Càng thấp càng tốt, invert: 2t/(v+t)
+          // v=0 → 2 (tốt nhất), v=t → 1.0, v→∞ → tiệm cận 0
+          normalized = (2 * t) / (v + t);
+        }
+      } else if (r.result !== null) {
+        normalized = r.result;
+      }
       return { name: key, value: normalized, fullMark: 2 };
     });
+
+  const legendGroups = [
+    { keys: ['A1', 'A2', 'A3'], label: 'càng cao càng tốt', dir: 'up' },
+    { keys: ['B1', 'B2'], label: 'càng thấp càng tốt', dir: 'down' },
+    { keys: ['B3'], label: 'càng cao càng tốt', dir: 'up' },
+    { keys: ['C1', 'C3'], label: 'càng cao càng tốt', dir: 'up' },
+    { keys: ['C2'], label: 'càng thấp càng tốt', dir: 'down' },
+    { keys: ['D1', 'D2', 'D3'], label: 'càng cao càng tốt', dir: 'up' },
+  ];
 
   return (
     <Card>
@@ -1136,16 +1167,35 @@ function NormalizedRadarChart({ ratios }: { ratios: Record<string, RatioData> })
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-4">
-        <ResponsiveContainer width="100%" height={280}>
+        <ResponsiveContainer width="100%" height={260}>
           <RadarChart data={data}>
             <PolarGrid stroke="hsl(var(--border))" />
             <PolarAngleAxis dataKey="name" tick={{ fontSize: 10 }} />
-            <PolarRadiusAxis tick={{ fontSize: 9 }} />
-            <Radar name="Ratio" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} />
-            <Legend />
+            <PolarRadiusAxis tick={{ fontSize: 9 }} domain={[0, 2]} tickCount={3} />
+            <Radar name="Chỉ số" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} />
             <Tooltip formatter={(value) => [Number(value).toFixed(3), 'Normalized']} />
           </RadarChart>
         </ResponsiveContainer>
+        {/* Legend giải thích hướng tốt/xấu */}
+        <div className="mt-2 pt-2 border-t space-y-1.5">
+          <p className="text-[10px] text-muted-foreground">
+            Trục radar: <span className="text-foreground font-medium">1.0</span> = đạt ngưỡng &nbsp;·&nbsp;
+            <span className="text-foreground font-medium">0–2</span> (tiệm cận, không cắt cứng)
+          </p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+            {legendGroups.map(({ keys, label, dir }) => (
+              <div key={keys.join()} className="flex items-center gap-1 text-[11px]">
+                {dir === 'up' ? (
+                  <TrendingUp className="h-3 w-3 text-green-500 shrink-0" />
+                ) : (
+                  <TrendingDown className="h-3 w-3 text-red-400 shrink-0" />
+                )}
+                <span className="font-semibold">{keys.join(', ')}</span>
+                <span className="text-muted-foreground">{label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
